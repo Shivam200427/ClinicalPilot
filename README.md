@@ -2,36 +2,38 @@
 
 **Multi-agent clinical decision support. Debate-driven reasoning. Real SOAP notes.**
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green.svg)](https://fastapi.tiangolo.com/)
-
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.116+-009688.svg)](https://fastapi.tiangolo.com/)
+[![LiteLLM](https://img.shields.io/badge/LLM-LiteLLM%20gateway-6f42c1.svg)](https://github.com/BerriAI/litellm)
+[![Deploy: Render](https://img.shields.io/badge/deploy-Render%20free%20tier-46E3B7.svg)](render.yaml)
+[![Frontend: zero-build](https://img.shields.io/badge/frontend-React%2018%20CDN%20(no%20build)-61dafb.svg)](frontend/index.html)
 
 ---
 
 ## Why this exists
 
-Most clinical AI tools are a single LLM call with a long prompt. That works for demos, not for patients.
+Most clinical AI tools are a single LLM call behind a long prompt. That's fine for a demo, not for a patient.
 
-ClinicalPilot runs **three specialized agents** — Clinical, Literature, Safety — through a **multi-round debate** with an adversarial Critic. They argue. They cite evidence. They disagree. After 2-3 rounds, a Synthesizer merges their output into a structured SOAP note, and a Medical Error Prevention Panel runs in parallel catching drug interactions, dosing issues, and contraindications.
+ClinicalPilot routes a case through **specialized agents** — Clinical, Literature, and Safety — and passes their work to an adversarial **Critic**. They cite evidence, disagree, and get challenged. A **Synthesizer** then merges the result into a structured SOAP note while a **Medical Error Prevention Panel** runs in parallel, catching drug interactions, dosing problems, and contraindications.
 
-The result: fewer hallucinations, more differential diagnoses, actual PubMed citations, and safety alerts that a single model would miss.
+The payoff: fewer hallucinations, richer differentials, real PubMed citations, and safety alerts a single model would miss — with every step traced so you can see exactly what was sent and what came back.
 
 ---
 
-## What it actually does
+## Highlights
 
-- **Multi-agent debate** — 3 specialist agents + Critic, 2-3 adversarial rounds, consensus-or-flag-for-human-review
-- **Emergency triage** — Bypasses the debate entirely, ESI scoring in <5 seconds, immediate action cards
-- **Medical error prevention** — Drug-drug interactions, drug-disease contraindications, renal/hepatic dosing alerts, pregnancy/pediatric/elderly flags (RxNorm + DrugBank with optional openFDA lookups)
-- **FHIR R4 + EHR upload** — Drop in FHIR bundles, PDFs, CSVs, or just type free-text clinical notes
-- **PHI anonymization** — Microsoft Presidio scrubs protected health information before anything hits an LLM
-- **Live citations** — PubMed E-utilities for real references (optional LanceDB RAG store available via the extras install)
-- **AI Chat** — Conversational assistant on the same configurable engines for quick clinical Q&A
-- **Configurable engines & routing** — Any provider/base-URL/key via LiteLLM; pick which model runs each agent (primary + fallbacks) in Settings. Keys resolve hardcoded → entered-in-UI → asked on demand
-- **Human-in-the-loop** — Doctor edits feed back into the debate engine for re-analysis (runs in the background, with a Stop control)
-- **Medical image classifiers** — External Streamlit apps (launched in in-app iframes) for lung disease, chest X-ray, retinopathy, and skin cancer analysis
-- **Observability** — Built-in dashboard: per-call counts, tokens, latency, and per-agent/per-request grouping (optional LangSmith/Langfuse export)
-- **Guardrails** — Pydantic schema validation, hallucinated medication cross-checks, differential completeness rules
+- **Multi-agent pipeline** — Clinical + Literature + Safety agents, an adversarial Critic, and a Synthesizer. Runs **single-pass by default** (fast, consensus in one round) and scales up to **multi-round debate** when you want it — set in Settings, no redeploy.
+- **Live pipeline visualization** — the dashboard streams real backend events over WebSocket: which agent is running *right now*, in the real order, with per-round activity — not a fake progress bar.
+- **Emergency fast-path** — bypasses the pipeline entirely for ESI triage in seconds, with red-flag detection and immediate action cards.
+- **Medical error prevention** — drug–drug interactions, drug–disease contraindications, renal/hepatic dosing alerts, and pregnancy/pediatric/elderly flags (RxNorm + DrugBank, optional openFDA).
+- **Full observability** — every call is captured (prompt sent, actual response, tokens, latency, agent, round, PubMed hits). Open any call in the Observability tab to read the exact request and reply.
+- **Skeuomorphic SOAP report** — a proper letterhead document with S/O/A/P sections, safety alerts, citations, and one-click PDF export.
+- **Configurable engines & routing** — any provider / base-URL / key via **LiteLLM**; choose which engine runs each agent (primary + ordered fallbacks) in Settings.
+- **Deploy-aware & self-healing keys** — on a hosted box it prefers cloud engines automatically; when a key is rate-limited or expired the UI prompts for a fresh one (with a direct Groq key link, or drop in an OpenAI key instead).
+- **FHIR R4 + EHR upload** — FHIR bundles, PDFs, CSVs, or plain free-text notes. Sample cases included (STEMI, Stroke, PE).
+- **PHI anonymization** — Microsoft Presidio scrubs protected health info before anything reaches an LLM (degrades to regex if the model is absent).
+- **Human-in-the-loop** — doctor edits feed back into the pipeline for re-analysis; the run continues in the background across page switches, with a Stop control.
+- **AI Chat** — conversational clinical Q&A on the same routed engines.
 
 ---
 
@@ -39,67 +41,146 @@ The result: fewer hallucinations, more differential diagnoses, actual PubMed cit
 
 ```bash
 git clone <repo-url> && cd clinicalpilot
-python -m venv venv && source venv/bin/activate
+python -m venv venv && source venv/bin/activate     # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# Add at least one key: OPENAI_API_KEY and/or GROQ_API_KEY
-# You can also set keys at runtime from the frontend Settings modal
+# Add at least one key: GROQ_API_KEY and/or OPENAI_API_KEY
+# (or run fully local with Ollama — see below). You can also set keys
+# at runtime from the Settings tab.
 
 python -m uvicorn backend.main:app --reload --port 8000
 # Open http://localhost:8000
 ```
 
-That's it. No npm, no webpack, no Docker required. The frontend is a single HTML file served by FastAPI.
+No npm, no bundler, no Docker. The entire frontend is one HTML file served by FastAPI. Targets **Python 3.11**.
 
-Note: analysis outputs are returned in API responses and are not persisted to a database by default.
+> Analysis outputs are returned in the API response and are **not** persisted to a database; observability traces are (in-memory ring buffer + SQLite).
 
-Full setup guide with platform-specific notes, optional local LLM (MedGemma via Ollama), and data downloads → [INSTALL.md](INSTALL.md)
+Full setup — platform notes, local MedGemma via Ollama, data downloads, Render deploy → **[INSTALL.md](INSTALL.md)**
 
 ---
 
-## Dependencies (lean by default)
+## Model routing (defaults)
 
-`requirements.txt` is deliberately small so the app builds on a 512 MB free tier. Everything heavy is lazy-loaded and moved to `requirements-optional.txt` with a graceful fallback when absent:
+Every agent and Chat is a **role** that maps to a **primary engine + ordered fallbacks**, all through LiteLLM. Shipped defaults:
 
-| Removed from the default install | Why it was redundant | Where it lives now |
-|---|---|---|
-| `groq` SDK | LiteLLM already talks to Groq — nothing imports the `groq` package | deleted (dead weight) |
-| `langchain*` | not imported anywhere in the codebase | `requirements-optional.txt` |
-| `sentence-transformers` | only used by the RAG CLI (`backend/rag`), not the request path — and it pulls **torch (~2 GB)**, the main cause of free-tier build OOM | `requirements-optional.txt` |
-| `lancedb` | RAG vector store, CLI-only; the literature agent uses PubMed instead | `requirements-optional.txt` |
-| `unstructured` | richer PDF parsing; `ehr_parser` falls back to PyPDF2 automatically | `requirements-optional.txt` |
-| `langsmith` | optional external tracing sink; built-in observability works without it | `requirements-optional.txt` |
-| `aiohttp`, `jinja2` | were pinned explicitly but only needed transitively — pip resolves them if a dep requires them | unpinned |
-| spaCy `en_core_web_lg` (560 MB, downloaded at runtime) | too big for the free tier and the runtime download crashed mid-request; `en_core_web_sm` (~12 MB) is installed as a wheel at build time | swapped to `en_core_web_sm` |
+| Role | Primary | Fallback |
+|------|---------|----------|
+| Clinical, Chat | **MedGemma 1.5** (local, via Ollama) | Cloud Fast (Groq) |
+| Literature, Safety, Critic, Synthesizer, Emergency, Med Panel | **Cloud Fast** (Groq `llama-3.3-70b`) | — |
 
-Want the RAG store, richer PDF parsing, or LangChain/LangSmith? `pip install -r requirements-optional.txt` on a box with enough RAM. See [INSTALL.md](INSTALL.md) for the full breakdown and Render deployment notes.
+- **Local by default where it matters**, cloud for speed everywhere else. Want MedGemma locally? `ollama pull medgemma1.5` (the Settings → Engines card walks you through it, and links [ollama.com/library/medgemma1.5](https://ollama.com/library/medgemma1.5) if it's missing).
+- **On a deployed host** (`DEPLOYED`/`RENDER` set) routing skips the local Ollama primary automatically, so Clinical/Chat fall to Cloud Fast — no dead-connection wait.
+- **Keys resolve** hardcoded → entered in the UI → asked on demand. A rate-limited (`429`) or rejected (`401`/expired) key re-prompts the UI for a new one.
+
+Edit it live in **Settings**, or in [`config/models.json`](config/models.json). No code changes, no redeploy.
 
 ---
 
 ## Architecture
 
 ```
-Input (FHIR / EHR / Text / Voice)
-    ↓
-Anonymizer (Presidio PHI scrubbing)
-    ↓
-Parsers → Unified PatientContext
-    ↓
-┌─────────────────────────────────────────┐
-│  DEBATE ENGINE (2-3 rounds)             │
-│                                         │
-│  Clinical Agent ──┐                     │
-│  Literature Agent ─┼──→ Critic ──→ loop │
-│  Safety Agent ────┘                     │
-└─────────────────────────────────────────┘
-    ↓                          ↓ (parallel)
-Synthesizer → Validator   Med Error Panel
-    ↓
-SOAP Note + Safety Alerts + Citations
+Input  (FHIR / EHR / Free-text / Voice)
+   │
+   ▼
+Anonymizer  (Presidio PHI scrubbing)
+   │
+   ▼
+Parsers  ─────►  Unified PatientContext
+   │
+   ▼
+┌──────────────────────────────────────────────┐
+│  PIPELINE  (single-pass default → multi-round) │
+│                                                │
+│  Clinical ──┐                                  │
+│  Literature ┼──►  Critic  ──►  (loop if multi) │
+│  Safety ────┘                                  │
+└──────────────────────────────────────────────┘
+   │                          │  (parallel)
+   ▼                          ▼
+Synthesizer → Validator   Med-Error Panel
+   │
+   ▼
+SOAP Note  +  Safety Alerts  +  PubMed Citations
 ```
 
-Full system design and layer-by-layer architecture reference → [ARCHITECTURE.md](ARCHITECTURE.md)
+Layer-by-layer design, routing internals, and env reference → **[ARCHITECTURE.md](ARCHITECTURE.md)**
+
+---
+
+## The app
+
+Zero-build React 18 SPA, served straight from FastAPI.
+
+| View | What's in it |
+|------|--------------|
+| **Analysis** | Free-text/voice input, FHIR/CSV upload with sample cases, **live WebSocket pipeline** (real agent + round), skeuomorphic SOAP report with PDF export, doctor feedback loop (persists in background) |
+| **Emergency** | Fast-path triage, ESI scoring, red flags, immediate action cards |
+| **Observability** | Every call — provider/model/agent/round, tokens, latency; click any call to see the **exact prompt sent, the actual response, and PubMed hits** |
+| **Tools** | Multi-drug interaction checker (RxNorm-backed), BMI/MAP calculators, clinical reference tables |
+| **Imaging AI** | External Streamlit classifiers in iframes — lung disease, chest X-ray, diabetic retinopathy, skin cancer |
+| **Architecture** | Live Mermaid diagrams — system flow and data pipeline |
+| **AI Chat** | Multi-turn clinical Q&A on the routed `chat` engine |
+| **Settings** | Engines, per-role routing, key management, connection tests, model discovery |
+
+---
+
+## API
+
+| Method | Path | What it does |
+|--------|------|--------------|
+| `POST` | `/api/analyze` | Full multi-agent pipeline → SOAP note |
+| `POST` | `/api/emergency` | Emergency triage, ESI scoring (fast path) |
+| `POST` | `/api/chat` | AI chat via the routed `chat` engine |
+| `POST` | `/api/human-feedback` | Doctor edits → re-analysis |
+| `POST` | `/api/upload/fhir` | Upload FHIR R4 bundle JSON |
+| `POST` | `/api/upload/ehr` | Upload PDF/CSV EHR document |
+| `GET`  | `/api/safety-check` | Drug interaction lookup (RxNorm + DrugBank) |
+| `GET`  | `/api/config-status` | Active engines + provider status for the UI |
+| `GET/PUT` | `/api/config/models` | Read/replace full engine + routing config |
+| `POST` | `/api/config/secret` | Set an API key at runtime (memory only) |
+| `POST` | `/api/config/test` | Live connection test for an engine |
+| `GET`  | `/api/observability/summary` · `/traces` | Call metrics and per-call traces |
+| `GET`  | `/api/classifiers` | List imaging classifier apps |
+| `GET`  | `/api/health` | Health check |
+| `WS`   | `/ws/analyze` | Streaming pipeline events for the live visualization |
+
+Full endpoint list → [ARCHITECTURE.md](ARCHITECTURE.md#api-endpoints)
+
+---
+
+## Tech stack
+
+| Layer | Tech |
+|-------|------|
+| Backend | Python 3.11, FastAPI, uvicorn, async throughout |
+| LLM gateway | **LiteLLM** — one client for Ollama / OpenAI / Groq / Azure / Anthropic / any OpenAI-compatible endpoint |
+| Routing | Per-role primary + ordered fallbacks (`config/models.json`), editable live in Settings; deploy-aware |
+| PHI safety | Microsoft Presidio + spaCy (`en_core_web_sm`; degrades to regex if absent) |
+| Clinical data | PubMed (BioPython Entrez), DrugBank, RxNorm, optional openFDA |
+| Frontend | React 18 CDN + Tailwind + Babel — **zero build step** |
+| Observability | Built-in: in-memory ring buffer + SQLite (prompt/response payloads, tokens, latency, per-agent/per-round) — optional LangSmith/Langfuse export |
+| Validation | Pydantic v2 schemas + guardrail rules (no hallucinated meds, differential completeness, explicit safety flags) |
+| Optional RAG | LanceDB + sentence-transformers — CLI-only, not in the request path |
+
+---
+
+## Dependencies (lean by default)
+
+`requirements.txt` is deliberately small so the app builds inside a **512 MB free tier**. Everything heavy is lazy-loaded and moved to `requirements-optional.txt` with a graceful fallback when absent:
+
+| Removed from the default install | Why | Where it lives now |
+|---|---|---|
+| `groq` SDK | LiteLLM already talks to Groq — the `groq` package is never imported | deleted |
+| `langchain*` | not imported anywhere in the code | `requirements-optional.txt` |
+| `sentence-transformers` | RAG-CLI only, and pulls **torch (~2 GB)** — the main free-tier build OOM | `requirements-optional.txt` |
+| `lancedb` | RAG vector store, CLI-only; the literature agent uses PubMed | `requirements-optional.txt` |
+| `unstructured` | richer PDF parsing; `ehr_parser` falls back to PyPDF2 | `requirements-optional.txt` |
+| `langsmith` | optional external trace sink; built-in observability works without it | `requirements-optional.txt` |
+| spaCy `en_core_web_lg` (560 MB, runtime download) | too big / crashed mid-request; `en_core_web_sm` (~12 MB) installs as a wheel at build | swapped to `en_core_web_sm` |
+
+Need the RAG store, richer PDF parsing, or LangSmith? `pip install -r requirements-optional.txt` on a box with the RAM to spare. Details and Render notes → [INSTALL.md](INSTALL.md).
 
 ---
 
@@ -108,100 +189,30 @@ Full system design and layer-by-layer architecture reference → [ARCHITECTURE.m
 ```
 clinicalpilot/
 ├── backend/
-│   ├── main.py                 # FastAPI app — all endpoints + provider-aware chat
-│   ├── config.py               # pydantic-settings config
-│   ├── models/                 # Pydantic schemas (patient, SOAP, agents, safety)
-│   ├── input_layer/            # Anonymizer, FHIR/EHR/text parsers
-│   ├── agents/                 # Orchestrator, Clinical, Literature, Safety, Critic
-│   │   └── prompts/            # System prompts (few-shot CoT)
-│   ├── debate/                 # Multi-round debate engine
-│   ├── validation/             # Synthesizer + output validator
-│   ├── emergency/              # Emergency fast-path triage
-│   ├── safety_panel/           # Drug interactions, dosing alerts
-│   ├── external/               # PubMed, DrugBank, RxNorm, openFDA APIs
-│   ├── llm/                    # LiteLLM router, model registry, secret resolution
-│   ├── rag/                    # LanceDB vector store + embeddings (OPTIONAL — CLI only)
-│   ├── observability/          # In-app trace store (ring buffer + SQLite) + optional exporters
-│   └── guardrails/             # Hallucination checks, schema validation
+│   ├── main.py            # FastAPI app — all endpoints + routed chat + WS streaming
+│   ├── config.py          # pydantic-settings config
+│   ├── models/            # Pydantic schemas (patient, SOAP, agents, safety)
+│   ├── input_layer/       # Anonymizer, FHIR/EHR/text parsers
+│   ├── agents/            # Orchestrator, Clinical, Literature, Safety, Critic (+ prompts/)
+│   ├── debate/            # Pipeline engine (single-pass → multi-round, emits WS events)
+│   ├── validation/        # Synthesizer + output validator
+│   ├── emergency/         # Emergency fast-path triage
+│   ├── safety_panel/      # Med-error panel (interactions, dosing)
+│   ├── external/          # PubMed, DrugBank, RxNorm, openFDA
+│   ├── llm/               # LiteLLM router, model registry, secret resolution
+│   ├── observability/     # Trace store (ring buffer + SQLite w/ payloads) + optional exporters
+│   ├── guardrails/        # Hallucination checks, schema validation
+│   └── rag/               # LanceDB + embeddings (OPTIONAL — CLI only)
 ├── frontend/
-│   └── index.html              # Full SPA — React 18 + Babel CDN (~1100 lines)
-├── data/
-│   ├── sample_fhir/            # Test FHIR R4 bundles (STEMI, Stroke, PE)
-│   ├── sample_ehr/             # Test CSV patient data
-│   ├── drugbank/               # DrugBank open CSV data
-│   ├── few_shot_examples/      # Few-shot clinical examples
-│   └── lancedb/                # Vector store (auto-created; only with the optional RAG extras)
-├── Flowcharts/                 # Interactive architecture diagrams (HTML)
-├── ARCHITECTURE.md
-├── INSTALL.md
-├── _smoke_test.sh              # End-to-end smoke tests
-├── requirements.txt            # Lean, free-tier-friendly runtime deps
-├── requirements-optional.txt   # Heavy extras (RAG/torch, unstructured, langchain, langsmith)
-├── render.yaml                 # Render deployment blueprint (free tier)
-├── config/models.json          # Model engines + per-role routing
-└── .env.example
+│   └── index.html         # Full SPA — React 18 + Babel + Tailwind (CDN)
+├── config/models.json     # Engines + per-role routing + debate rounds
+├── data/                  # sample_fhir/, sample_ehr/, drugbank/, few_shot_examples/
+├── requirements.txt       # Lean, free-tier-friendly runtime deps
+├── requirements-optional.txt
+├── render.yaml            # Render deploy blueprint (Python 3.11, en_core_web_sm)
+├── ARCHITECTURE.md · INSTALL.md · .env.example
+└── _smoke_test.sh         # End-to-end smoke tests
 ```
-
----
-
-## API
-
-| Method | Path | What it does |
-|--------|------|--------------|
-| `POST` | `/api/analyze` | Full multi-agent debate pipeline → SOAP note |
-| `POST` | `/api/emergency` | Emergency triage, ESI scoring (<5s) |
-| `GET` | `/api/config-status` | Returns configured providers and active provider |
-| `POST` | `/api/set-api-key` | Set OpenAI/Groq API key at runtime (memory only) |
-| `POST` | `/api/chat` | AI chat via OpenAI-first with Groq fallback |
-| `POST` | `/api/upload/fhir` | Upload FHIR R4 bundle JSON |
-| `POST` | `/api/upload/ehr` | Upload PDF/CSV EHR documents |
-| `POST` | `/api/human-feedback` | Doctor edits → triggers re-analysis |
-| `GET` | `/api/safety-check` | Drug interaction lookup (RxNorm + DrugBank) |
-| `GET` | `/api/classifiers` | List available imaging classifier apps |
-| `GET` | `/api/health` | Health check |
-| `WS` | `/ws/analyze` | WebSocket streaming — real-time pipeline visualization |
-
----
-
-## Operational snapshot
-
-1. Configure at least one provider key (`OPENAI_API_KEY` and/or `GROQ_API_KEY`) or enable local Ollama.
-2. Run `python -m uvicorn backend.main:app --reload --port 8000`.
-3. Use Analysis for full multi-agent SOAP generation and Emergency for fast triage.
-4. Set or switch keys at runtime from Settings (`/api/config-status`, `/api/set-api-key`).
-5. Use `_smoke_test.sh` for quick end-to-end verification.
-
----
-
-## Frontend
-
-Zero-build React 18 SPA — no Node.js, no bundler. Served straight from FastAPI.
-
-| View | What's in it |
-|------|-------------|
-| **Analysis** | Free-text or voice input, FHIR/CSV upload with sample data buttons, real-time WebSocket pipeline stages, full SOAP report with PDF export, doctor feedback loop |
-| **Emergency** | Fast-path triage, ESI scoring, red flag identification, immediate action cards |
-| **Tools** | Drug interaction checker (multi-drug, RxNorm-backed), BMI calculator, MAP calculator, clinical reference tables |
-| **Imaging AI** | External Streamlit classifier apps rendered in iframes — lung disease, chest X-ray, diabetic retinopathy, skin cancer |
-| **Architecture** | Live Mermaid.js diagrams — system flow and data pipeline |
-| **AI Chat** | Conversational clinical Q&A with OpenAI-first and Groq fallback, multi-turn conversation history, provider metadata |
-
----
-
-## Tech stack
-
-| Layer | Tech |
-|-------|------|
-| Backend | Python 3.10+, FastAPI, uvicorn, async everywhere |
-| LLM client | **LiteLLM** — one unified client for Ollama / OpenAI / Groq / Azure / Anthropic / any OpenAI-compatible endpoint |
-| Agents | Per-role routing (primary + ordered fallbacks), configurable in Settings; ships Groq-first, MedGemma-via-Ollama optional |
-| AI Chat | Same routed engines (own `chat` role) |
-| PHI Safety | Microsoft Presidio + spaCy (`en_core_web_sm` by default; degrades to regex if absent) |
-| Drug Data | PubMed (BioPython Entrez), DrugBank, RxNorm, optional openFDA lookups |
-| Frontend | React 18 CDN + Tailwind CSS + Babel (zero build step) |
-| Observability | Built-in (in-memory ring buffer + SQLite): per-call counts, tokens, latency, per-agent/per-request grouping — optional LangSmith/Langfuse export |
-| Validation | Pydantic v2 schemas + custom guardrail rules |
-| Vector DB / Embeddings | LanceDB + sentence-transformers — **optional** (RAG ingest/query CLI only; not in the request path) |
 
 ---
 
@@ -211,8 +222,10 @@ Zero-build React 18 SPA — no Node.js, no bundler. Served straight from FastAPI
 bash _smoke_test.sh
 ```
 
-Validates: health check, full analysis pipeline (~100s with 14 LLM calls), emergency mode (~3s), drug safety checks, classifier listing. Results are logged with timing.
-
-Example latest run: all checks passed (health, full analysis, emergency mode, safety check, classifiers).
+Validates health check, full analysis pipeline, emergency mode, drug safety checks, and classifier listing — each logged with timing.
 
 ---
+
+## License & disclaimer
+
+ClinicalPilot is a research and educational decision-support project. It is **not** a medical device and is **not** a substitute for professional clinical judgment. Do not use it to make real patient-care decisions.
