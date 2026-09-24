@@ -16,7 +16,7 @@ import contextvars
 import logging
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 import litellm
 
@@ -41,6 +41,13 @@ GROQ_BASE_DELAY = 5.0
 # without every agent threading these through their signatures.
 _ctx_request_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("cp_request_id", default=None)
 _ctx_debate_round: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar("cp_debate_round", default=None)
+# Optional token sink for live output. When set (by a streaming analysis run), calls are
+# streamed and text deltas are pushed as sink(role, text); sink(role, None) means "reset"
+# (a retry or fallback started over). Unset everywhere else, so chat/REST are unchanged.
+_ctx_stream_sink: contextvars.ContextVar[Optional[Callable[[str, Optional[str]], Awaitable[None]]]] = \
+    contextvars.ContextVar("cp_stream_sink", default=None)
+
+STREAM_FLUSH_SEC = 0.15
 
 
 def set_call_context(request_id: Optional[str] = None, debate_round: Optional[int] = None) -> None:
@@ -49,6 +56,11 @@ def set_call_context(request_id: Optional[str] = None, debate_round: Optional[in
         _ctx_request_id.set(request_id)
     if debate_round is not None:
         _ctx_debate_round.set(debate_round)
+
+
+def set_stream_sink(sink: Optional[Callable[[str, Optional[str]], Awaitable[None]]]) -> None:
+    """Stream every llm_call in the current context to `sink` (see _ctx_stream_sink)."""
+    _ctx_stream_sink.set(sink)
 
 
 def current_context() -> tuple[Optional[str], Optional[int]]:
@@ -158,7 +170,11 @@ async def _call_profile(
     last_exc: Optional[Exception] = None
     for attempt in range(retries):
         try:
-            resp = await litellm.acompletion(**args)
+            sink = _ctx_stream_sink.get()
+            if sink is not None:
+                resp = await _streamed_completion(args, sink, role)
+            else:
+                resp = await litellm.acompletion(**args)
             latency_ms = int((time.monotonic() - start) * 1000)
 
             content_str = resp.choices[0].message.content or ""
@@ -204,6 +220,43 @@ async def _call_profile(
     if profile.api_key_ref and key_reason:
         raise NeedsKey(profile.api_key_ref, profile.id, reason=key_reason)
     raise last_exc  # type: ignore[misc]
+
+
+async def _emit_delta(sink, role: str, text: Optional[str]) -> None:
+    try:
+        await sink(role, text)
+    except Exception:
+        pass
+
+
+async def _streamed_completion(args: dict, sink, role: str):
+    """Stream a completion, pushing throttled text deltas to `sink`, and return a
+    response object shaped like the non-streamed one (content + usage)."""
+    await _emit_delta(sink, role, None)  # reset any text from an earlier attempt
+    try:
+        stream = await litellm.acompletion(**args, stream=True)
+    except Exception:
+        # Provider refused streaming outright: fall back to a plain call.
+        return await litellm.acompletion(**args)
+
+    chunks: list = []
+    buf: list[str] = []
+    last = time.monotonic()
+    async for chunk in stream:
+        chunks.append(chunk)
+        try:
+            delta = chunk.choices[0].delta.content
+        except (AttributeError, IndexError):
+            delta = None
+        if delta:
+            buf.append(delta)
+        if buf and time.monotonic() - last >= STREAM_FLUSH_SEC:
+            await _emit_delta(sink, role, "".join(buf))
+            buf.clear()
+            last = time.monotonic()
+    if buf:
+        await _emit_delta(sink, role, "".join(buf))
+    return litellm.stream_chunk_builder(chunks, messages=args.get("messages"))
 
 
 def _key_failure_reason(exc: Optional[Exception]) -> Optional[str]:

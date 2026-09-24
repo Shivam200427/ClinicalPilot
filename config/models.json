@@ -5,7 +5,7 @@
       "id": "cloud-fast",
       "label": "Cloud Fast",
       "provider": "groq",
-      "model": "llama-3.3-70b-versatile",
+      "model": "openai/gpt-oss-120b",
       "base_url": null,
       "api_key_ref": "GROQ_API_KEY",
       "serialize": true,

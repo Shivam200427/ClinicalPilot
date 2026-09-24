@@ -38,3 +38,5 @@ logs/
 # Docker
 docker-compose.override.yml
 .env
+# Frontend build tooling
+node_modules/

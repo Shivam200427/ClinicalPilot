@@ -1,0 +1,13 @@
+{
+  "name": "clinicalpilot-frontend",
+  "private": true,
+  "description": "Build tooling for the ClinicalPilot UI. Only needed when editing frontend/src; the compiled app.js and styles.css are committed.",
+  "scripts": {
+    "build": "node frontend/build.mjs",
+    "watch": "node frontend/build.mjs --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "tailwindcss": "^3.4.17"
+  }
+}

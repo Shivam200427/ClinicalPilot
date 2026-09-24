@@ -41,7 +41,7 @@ class Settings(BaseSettings):
 
     # ── Groq (AI Chat) ────────────────────────────────────
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "openai/gpt-oss-120b"
 
     # ── FDA ──────────────────────────────────────────────
     fda_api_key: str = ""
@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["*"]
     emergency_timeout_sec: int = 5
     max_debate_rounds: int = 1
+    # Start with the presentation dataset on (also togglable in Settings).
+    demo_mode: bool = False
 
     # ── Data Paths ───────────────────────────────────────
     lancedb_path: str = "data/lancedb"

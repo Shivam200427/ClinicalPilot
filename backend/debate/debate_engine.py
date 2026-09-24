@@ -80,7 +80,7 @@ async def run_debate(
         critic = await run_critic_agent(patient, clinical, literature, safety)
         state.critic_outputs.append(critic)
         await _emit(on_event, type="agent", agent="critic", round=round_num, status="done",
-                    consensus=bool(critic.consensus_reached))
+                    consensus=bool(critic.consensus_reached), data=_dump(critic))
 
         if round_num < max_rounds:
             if critic.consensus_reached:
@@ -118,8 +118,17 @@ async def _run_agent(on_event: EventCb, agent: str, round_num: int, coro):
     """Emit start/done around an agent coroutine."""
     await _emit(on_event, type="agent", agent=agent, round=round_num, status="start")
     out = await coro
-    await _emit(on_event, type="agent", agent=agent, round=round_num, status="done")
+    await _emit(on_event, type="agent", agent=agent, round=round_num, status="done",
+                data=_dump(out))
     return out
+
+
+def _dump(out) -> dict | None:
+    """Serialize an agent output for the UI's partial-results view. Never raises."""
+    try:
+        return out.model_dump()
+    except Exception:
+        return None
 
 
 async def _round_1(
@@ -144,14 +153,12 @@ async def _round_1(
         safety = await _run_agent(on_event, "safety", round_num,
                                   run_safety_agent(patient, proposed_plan=clinical.soap_draft))
     else:
-        await _emit(on_event, type="agent", agent="literature", round=round_num, status="start")
-        await _emit(on_event, type="agent", agent="safety", round=round_num, status="start")
         literature, safety = await asyncio.gather(
-            run_literature_agent(patient, clinical_output=clinical),
-            run_safety_agent(patient, proposed_plan=clinical.soap_draft),
+            _run_agent(on_event, "literature", round_num,
+                       run_literature_agent(patient, clinical_output=clinical)),
+            _run_agent(on_event, "safety", round_num,
+                       run_safety_agent(patient, proposed_plan=clinical.soap_draft)),
         )
-        await _emit(on_event, type="agent", agent="literature", round=round_num, status="done")
-        await _emit(on_event, type="agent", agent="safety", round=round_num, status="done")
 
     return clinical, literature, safety
 
@@ -179,14 +186,12 @@ async def _revision_round(
         safety = await _run_agent(on_event, "safety", round_num,
                                   run_safety_agent(patient, proposed_plan=clinical.soap_draft, critique=critique_text))
     else:
-        await _emit(on_event, type="agent", agent="literature", round=round_num, status="start")
-        await _emit(on_event, type="agent", agent="safety", round=round_num, status="start")
         literature, safety = await asyncio.gather(
-            run_literature_agent(patient, clinical_output=clinical, critique=critique_text),
-            run_safety_agent(patient, proposed_plan=clinical.soap_draft, critique=critique_text),
+            _run_agent(on_event, "literature", round_num,
+                       run_literature_agent(patient, clinical_output=clinical, critique=critique_text)),
+            _run_agent(on_event, "safety", round_num,
+                       run_safety_agent(patient, proposed_plan=clinical.soap_draft, critique=critique_text)),
         )
-        await _emit(on_event, type="agent", agent="literature", round=round_num, status="done")
-        await _emit(on_event, type="agent", agent="safety", round=round_num, status="done")
 
     return clinical, literature, safety
 

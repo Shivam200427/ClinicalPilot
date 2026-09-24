@@ -86,7 +86,7 @@ def _default_config() -> ModelsConfig:
         ),
         "cloud-fast": Profile(
             id="cloud-fast", label="Cloud Fast", provider="groq",
-            model="llama-3.3-70b-versatile", api_key_ref="GROQ_API_KEY", serialize=True,
+            model="openai/gpt-oss-120b", api_key_ref="GROQ_API_KEY", serialize=True,
             params=ProfileParams(temperature=0.2, max_tokens=2048, json_mode=True),
         ),
         "cloud-quality": Profile(

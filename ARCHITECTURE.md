@@ -257,7 +257,7 @@ to spare. See `INSTALL.md` for the full breakdown and Render deployment guidance
 | `FDA_API_KEY` | No | openFDA API key (optional, works without) |
 | `LOG_LEVEL` | No | Default: `INFO` |
 | `GROQ_API_KEY` | No* | Groq API key for provider fallback and chat |
-| `GROQ_MODEL` | No | Default: `llama-3.3-70b-versatile` |
+| `GROQ_MODEL` | No | Default: `openai/gpt-oss-120b` |
 | `CORS_ORIGINS` | No | Default: `["*"]` |
 | `EMERGENCY_TIMEOUT_SEC` | No | Default: `5` |
 | `MAX_DEBATE_ROUNDS` | No | Legacy/unused — debate rounds come from `config/models.json → debate.max_rounds` (**default now 1**), overridable per request. This env var is not read. |

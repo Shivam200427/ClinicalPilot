@@ -11,11 +11,17 @@ from __future__ import annotations
 import asyncio
 from typing import Awaitable, Callable, Optional
 
-# In-memory flag (process-local, resets on restart). Toggled via /api/config/demo.
-_STATE = {"enabled": False}
+# In-memory flag, toggled via /api/config/demo. Starts from DEMO_MODE in .env.
+_STATE: dict = {"enabled": None}
 
 
 def is_enabled() -> bool:
+    if _STATE["enabled"] is None:
+        try:
+            from backend.config import get_settings
+            _STATE["enabled"] = bool(get_settings().demo_mode)
+        except Exception:
+            _STATE["enabled"] = False
     return _STATE["enabled"]
 
 
@@ -59,7 +65,7 @@ def demo_soap() -> dict:
              "reasoning": "Dyspnea and hypoxia present, but ECG and troponin pattern favor coronary occlusion."},
         ],
         "risk_scores": {"TIMI": "high", "GRACE": "elevated", "Killip": "II"},
-        "uncertainty": "low",
+        "uncertainty": "high",
         "citations": [
             "2023 ACC/AHA STEMI guideline: primary PCI within 90 minutes of first medical contact.",
             "Ibanez B, et al. ESC 2017 STEMI management. Eur Heart J. PMID: 28886621.",
@@ -94,12 +100,31 @@ def demo_med_panel() -> dict:
             {"severity": "moderate", "description": "Lisinopril + potential contrast: monitor renal function post-PCI."},
         ],
         "contraindications": [
-            {"description": "Documented sulfa allergy — avoid sulfonamide antibiotics."},
+            {"description": "Documented sulfa allergy. Avoid sulfonamide antibiotics."},
         ],
         "dosing_alerts": [
             {"description": "Metformin: hold before/after iodinated contrast to reduce lactic-acidosis risk."},
         ],
         "population_flags": [],
+    }
+
+
+def demo_emergency() -> dict:
+    return {
+        "esi_score": 1,
+        "call_to_action": "Activate the cath lab now. Aspirin 325 mg chewed, 12-lead ECG repeat, two large-bore IVs, continuous monitoring.",
+        "red_flags": [
+            "ST-elevation in V1 to V4 with reciprocal changes",
+            "Troponin I 0.82 ng/mL, about 20 times the upper limit",
+            "Hypoxia (SpO2 94%) and tachycardia with an S3 gallop",
+        ],
+        "top_differentials": [
+            {"diagnosis": "Acute anterior STEMI", "likelihood": "high"},
+            {"diagnosis": "Aortic dissection", "likelihood": "low"},
+            {"diagnosis": "Pulmonary embolism", "likelihood": "low"},
+        ],
+        "safety_flags": ["Sulfa allergy documented", "Hold metformin before iodinated contrast"],
+        "latency_ms": 1200,
     }
 
 
@@ -133,28 +158,73 @@ def demo_chat_reply(messages: list) -> dict:
 
 
 # ── Progress script for the streaming (WebSocket) analysis ────────────────────
+_LIVE_TEXT = {
+    "clinical": (
+        '{"differentials": [{"diagnosis": "Acute anterior STEMI", "likelihood": "high"}, '
+        '{"diagnosis": "Aortic dissection", "likelihood": "low"}, '
+        '{"diagnosis": "Pulmonary embolism", "likelihood": "low"}], '
+        '"reasoning_trace": "ST-elevation in V1 to V4 with reciprocal changes in the inferior leads '
+        'and troponin I of 0.82 ng/mL point to an acute anterior wall infarction, most likely a '
+        'proximal LAD occlusion. S3 gallop suggests Killip class II."}'
+    ),
+    "literature": (
+        '{"summary": "Guidelines support emergent primary PCI within 90 minutes of first medical '
+        'contact. High-intensity statin and dual antiplatelet therapy are standard.", '
+        '"confidence": "high", "evidence": [{"title": "2023 ACC/AHA STEMI guideline", "pmid": "37471501"}]}'
+    ),
+    "safety": (
+        '{"flags": [{"description": "Hold metformin around iodinated contrast (lactic acidosis risk)", '
+        '"severity": "moderate"}, {"description": "Sulfa allergy: avoid sulfonamides", "severity": "moderate"}]}'
+    ),
+    "critic": (
+        '{"consensus_reached": true, "overall_assessment": "ECG and troponin correlation is definitive '
+        'for anterior STEMI. Safety flagged contrast nephropathy risk. No unresolved contradictions."}'
+    ),
+}
+
+
 def _events():
-    """(delay_seconds, websocket message) sequence for one demo run."""
+    """Demo script: (delay_seconds, message) pairs, or ("stream", agent, seconds)."""
     return [
-        (0.4, {"type": "status", "stage": "parsing", "detail": "Anonymizing PHI & parsing clinical input"}),
-        (0.7, {"type": "round_start", "round": 1, "max_rounds": 1}),
+        (0.4, {"type": "status", "stage": "parsing", "detail": "Anonymizing PHI and parsing input"}),
+        (0.6, {"type": "agent", "agent": "med_panel", "round": 0, "status": "start"}),
+        (0.1, {"type": "round_start", "round": 1, "max_rounds": 1}),
         (0.2, {"type": "agent", "agent": "clinical", "round": 1, "status": "start"}),
-        (1.6, {"type": "agent", "agent": "clinical", "round": 1, "status": "done"}),
+        ("stream", "clinical", 2.4),
+        (0.1, {"type": "agent", "agent": "clinical", "round": 1, "status": "done"}),
         (0.2, {"type": "agent", "agent": "literature", "round": 1, "status": "start"}),
-        (0.2, {"type": "agent", "agent": "safety", "round": 1, "status": "start"}),
-        (1.8, {"type": "agent", "agent": "literature", "round": 1, "status": "done"}),
-        (0.6, {"type": "agent", "agent": "safety", "round": 1, "status": "done"}),
+        (0.1, {"type": "agent", "agent": "safety", "round": 1, "status": "start"}),
+        ("stream", "literature", 1.6),
+        (0.1, {"type": "agent", "agent": "literature", "round": 1, "status": "done"}),
+        ("stream", "safety", 1.0),
+        (0.1, {"type": "agent", "agent": "safety", "round": 1, "status": "done"}),
+        (0.1, {"type": "agent", "agent": "med_panel", "round": 0, "status": "done"}),
         (0.2, {"type": "agent", "agent": "critic", "round": 1, "status": "start"}),
-        (1.4, {"type": "agent", "agent": "critic", "round": 1, "status": "done", "consensus": True}),
+        ("stream", "critic", 1.4),
+        (0.1, {"type": "agent", "agent": "critic", "round": 1, "status": "done", "consensus": True}),
         (0.2, {"type": "round_end", "round": 1, "consensus": True}),
-        (0.3, {"type": "status", "stage": "synthesis", "detail": "Synthesizing final SOAP note"}),
-        (1.2, {"type": "status", "stage": "synthesis", "detail": "Validating output & safety clearance"}),
+        (0.3, {"type": "status", "stage": "synthesis", "detail": "Writing the SOAP note"}),
+        (0.1, {"type": "agent", "agent": "synthesizer", "round": None, "status": "start"}),
+        (1.4, {"type": "status", "stage": "synthesis", "detail": "Validating output and safety checks"}),
     ]
 
 
+async def _stream_text(send, agent: str, seconds: float) -> None:
+    text = _LIVE_TEXT.get(agent, "")
+    await send({"type": "delta", "agent": agent, "reset": True})
+    step = max(1, len(text) // max(1, int(seconds / 0.12)))
+    for i in range(0, len(text), step):
+        await asyncio.sleep(0.12)
+        await send({"type": "delta", "agent": agent, "text": text[i:i + step]})
+
+
 async def stream_demo_analysis(send: Callable[[dict], Awaitable[None]], request_id: str) -> dict:
-    """Stream a realistic run over the websocket, record traces, return the final payload."""
-    for delay, msg in _events():
+    """Stream a realistic run, record traces, and return the final payload."""
+    for item in _events():
+        if item[0] == "stream":
+            await _stream_text(send, item[1], item[2])
+            continue
+        delay, msg = item
         await asyncio.sleep(delay)
         await send(msg)
     record_demo_traces(request_id)
@@ -214,7 +284,7 @@ def record_demo_traces(request_id: str) -> None:
         "You are a safety agent. Detect contraindications, interactions, dosing and population risks.",
         f"## Proposed plan: emergent PCI, aspirin, anticoagulation, statin\n## Patient allergies: sulfa, shellfish",
         '{"flags":[{"description":"Hold metformin around iodinated contrast (lactic acidosis risk)",'
-        '"severity":"moderate"},{"description":"Sulfa allergy — avoid sulfonamides","severity":"moderate"}]}')
+        '"severity":"moderate"},{"description":"Sulfa allergy: avoid sulfonamides","severity":"moderate"}]}')
 
     rec("critic", "medgemma1.5", "medgemma-local", 1, 1310, 402, 1440,
         "You are an adversarial critic. Check EHR contradictions, evidence gaps and safety misses; decide consensus.",

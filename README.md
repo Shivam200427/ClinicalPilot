@@ -1,231 +1,148 @@
 # ClinicalPilot
 
-**Multi-agent clinical decision support. Debate-driven reasoning. Real SOAP notes.**
+**Multi-agent clinical decision support, powered by MedGemma.**
+Specialist AI agents review a case, challenge each other, and produce a structured SOAP note with safety checks and cited evidence.
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.116+-009688.svg)](https://fastapi.tiangolo.com/)
+[![MedGemma 1.5](https://img.shields.io/badge/model-MedGemma%201.5-4285F4.svg)](https://ollama.com/library/medgemma1.5)
 [![LiteLLM](https://img.shields.io/badge/LLM-LiteLLM%20gateway-6f42c1.svg)](https://github.com/BerriAI/litellm)
-[![Deploy: Render](https://img.shields.io/badge/deploy-Render%20free%20tier-46E3B7.svg)](render.yaml)
-[![Frontend: zero-build](https://img.shields.io/badge/frontend-React%2018%20CDN%20(no%20build)-61dafb.svg)](frontend/index.html)
+
+![Analysis workspace](docs/screenshots/03-analysis-complete.png)
 
 ---
 
 ## Why this exists
 
-Most clinical AI tools are a single LLM call behind a long prompt. That's fine for a demo, not for a patient.
+Most clinical AI tools are a single model call behind a long prompt. That is fine for a prototype, not for a patient.
 
-ClinicalPilot routes a case through **specialized agents** — Clinical, Literature, and Safety — and passes their work to an adversarial **Critic**. They cite evidence, disagree, and get challenged. A **Synthesizer** then merges the result into a structured SOAP note while a **Medical Error Prevention Panel** runs in parallel, catching drug interactions, dosing problems, and contraindications.
-
-The payoff: fewer hallucinations, richer differentials, real PubMed citations, and safety alerts a single model would miss — with every step traced so you can see exactly what was sent and what came back.
+ClinicalPilot routes each case through **specialized agents** (Clinical, Literature and Safety), hands their work to an adversarial **Critic**, and merges the result into a proper **SOAP note** while a **medication error panel** runs in parallel. Every step streams live to the screen and every model call is recorded, so you can see exactly what was asked and what came back.
 
 ---
 
-## Highlights
+## MedGemma: the model at the centre
 
-- **Multi-agent pipeline** — Clinical + Literature + Safety agents, an adversarial Critic, and a Synthesizer. Runs **single-pass by default** (fast, consensus in one round) and scales up to **multi-round debate** when you want it — set in Settings, no redeploy.
-- **Live pipeline visualization** — the dashboard streams real backend events over WebSocket: which agent is running *right now*, in the real order, with per-round activity — not a fake progress bar.
-- **Emergency fast-path** — bypasses the pipeline entirely for ESI triage in seconds, with red-flag detection and immediate action cards.
-- **Medical error prevention** — drug–drug interactions, drug–disease contraindications, renal/hepatic dosing alerts, and pregnancy/pediatric/elderly flags (RxNorm + DrugBank, optional openFDA).
-- **Full observability** — every call is captured (prompt sent, actual response, tokens, latency, agent, round, PubMed hits). Open any call in the Observability tab to read the exact request and reply.
-- **Skeuomorphic SOAP report** — a proper letterhead document with S/O/A/P sections, safety alerts, citations, and one-click PDF export.
-- **Configurable engines & routing** — any provider / base-URL / key via **LiteLLM**; choose which engine runs each agent (primary + ordered fallbacks) in Settings.
-- **Deploy-aware & self-healing keys** — on a hosted box it prefers cloud engines automatically; when a key is rate-limited or expired the UI prompts for a fresh one (with a direct Groq key link, or drop in an OpenAI key instead).
-- **FHIR R4 + EHR upload** — FHIR bundles, PDFs, CSVs, or plain free-text notes. Sample cases included (STEMI, Stroke, PE).
-- **PHI anonymization** — Microsoft Presidio scrubs protected health info before anything reaches an LLM (degrades to regex if the model is absent).
-- **Human-in-the-loop** — doctor edits feed back into the pipeline for re-analysis; the run continues in the background across page switches, with a Stop control.
-- **AI Chat** — conversational clinical Q&A on the same routed engines.
+[**MedGemma 1.5**](https://ollama.com/library/medgemma1.5) is Google's open medical model, trained for clinical text and reasoning. ClinicalPilot runs it **locally through Ollama**, so patient text never leaves the machine.
+
+- **Clinical reasoning agent.** MedGemma builds the differential diagnosis, risk scores and the first SOAP draft.
+- **AI Assistant chat.** Conversational clinical Q&A on the same local model.
+- **Reasoning you can watch.** MedGemma 1.5 thinks before it answers. The live pipeline streams that reasoning token by token, labelled *Thinking* and *Answer*, and the final note keeps only the answer.
+- **Local-model controls.** Settings shows whether Ollama is running, whether MedGemma is downloaded and whether it is loaded in memory, with one click to load it before the first case.
+
+Every agent is a routing role, so any of them can run on MedGemma, a cloud model, or both with fallbacks.
 
 ---
 
-## Quick start
+## Features
 
-```bash
-git clone <repo-url> && cd clinicalpilot
-python -m venv venv && source venv/bin/activate     # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+### Clinical input
+Free text, voice dictation, PDF or CSV records, and **FHIR R4** bundles. Built-in sample cases (STEMI, stroke, pulmonary embolism, FHIR bundle, EHR CSV) load in one click. Recent cases are saved in the browser and reopen from the **Recent** menu.
 
-cp .env.example .env
-# Add at least one key: GROQ_API_KEY and/or OPENAI_API_KEY
-# (or run fully local with Ollama — see below). You can also set keys
-# at runtime from the Settings tab.
+![Clinical input](docs/screenshots/01-clinical-input.png)
 
-python -m uvicorn backend.main:app --reload --port 8000
-# Open http://localhost:8000
-```
+### Live multi-agent pipeline
+Watch the real run as it happens: parse and anonymize, Clinical, Literature, Safety, medication check, Critic and SOAP synthesis. Each step shows the engine it runs on, its timing, and its output streaming in live.
 
-No npm, no bundler, no Docker. The entire frontend is one HTML file served by FastAPI. Targets **Python 3.11**.
+![Live pipeline](docs/screenshots/02-live-pipeline.png)
 
-> Analysis outputs are returned in the API response and are **not** persisted to a database; observability traces are (in-memory ring buffer + SQLite).
+Runs live on the server, not in the tab. Switch pages, refresh, or drop the connection and the page re-attaches to the same run. Stop cancels it at any time. If a step fails, the results from the agents that finished are still shown.
 
-Full setup — platform notes, local MedGemma via Ollama, data downloads, Render deploy → **[INSTALL.md](INSTALL.md)**
+<p align="center"><img src="docs/screenshots/04-pipeline-details.png" width="720" alt="Pipeline details"></p>
 
----
+### The SOAP report
+A formal clinical document clipped to a clipboard: case details, numbered Subjective, Objective, Assessment and Plan sections, a differential diagnosis table, risk stratification, medication safety, PubMed references, the agents' review summary, and the clinician review status with dates and times. It can be edited in place and exported to PDF, printed or copied.
 
-## Model routing (defaults)
+**[Download the sample SOAP report (PDF)](docs/sample-soap-report.pdf)**
 
-Every agent and Chat is a **role** that maps to a **primary engine + ordered fallbacks**, all through LiteLLM. Shipped defaults:
+<p align="center"><img src="docs/screenshots/05-full-report.png" width="760" alt="Full SOAP report"></p>
 
-| Role | Primary | Fallback |
-|------|---------|----------|
-| Clinical, Chat | **MedGemma 1.5** (local, via Ollama) | Cloud Fast (Groq) |
-| Literature, Safety, Critic, Synthesizer, Emergency, Med Panel | **Cloud Fast** (Groq `llama-3.3-70b`) | — |
+### Doctor feedback loop
+Add a correction or missing context and the case goes through a full new review. When it finishes, changed sections are marked *Revised*, with added text highlighted and removed text struck through.
 
-- **Local by default where it matters**, cloud for speed everywhere else. Want MedGemma locally? `ollama pull medgemma1.5` (the Settings → Engines card walks you through it, and links [ollama.com/library/medgemma1.5](https://ollama.com/library/medgemma1.5) if it's missing).
-- **On a deployed host** (`DEPLOYED`/`RENDER` set) routing skips the local Ollama primary automatically, so Clinical/Chat fall to Cloud Fast — no dead-connection wait.
-- **Keys resolve** hardcoded → entered in the UI → asked on demand. A rate-limited (`429`) or rejected (`401`/expired) key re-prompts the UI for a new one.
+![Feedback changes](docs/screenshots/06-feedback-changes.png)
 
-Edit it live in **Settings**, or in [`config/models.json`](config/models.json). No code changes, no redeploy.
+### Emergency triage
+A fast path that skips the debate: ESI level, red flags, immediate actions, top differentials and safety notes in seconds.
+
+![Emergency triage](docs/screenshots/07-emergency-triage.png)
+
+### AI Assistant
+Clinical Q&A with formatted answers, suggested starter questions, voice input, and conversation history that survives page switches and refreshes.
+
+![AI Assistant](docs/screenshots/08-ai-assistant.png)
+
+### Clinical tools
+A drug interaction checker backed by the medication error panel and DrugBank name checks, bedside calculators (BMI, MAP, Cockcroft-Gault CrCl, anion gap with albumin correction, Bazett QTc), and quick reference ranges.
+
+![Clinical tools](docs/screenshots/09-clinical-tools.png)
+
+### Imaging AI
+Chest X-ray, chest disease, diabetic retinopathy and skin lesion classifiers, embedded or opened in a new tab.
+
+![Imaging AI](docs/screenshots/10-imaging-ai.png)
+
+### Observability
+Every model call is recorded: agent, engine, model, round, tokens, latency and status. Open any call to read the exact prompt sent, the model's full response, and the PubMed results it used.
+
+![Observability](docs/screenshots/13-observability.png)
+
+### Settings: engines and routing
+Any provider through LiteLLM (Ollama, OpenAI, Groq, Anthropic, Azure or any OpenAI-compatible server). Add engines from presets, find available models, test all engines in one click, and choose which engine each agent uses, with ordered fallbacks and one-click routing setups. Changes apply immediately.
+
+![Settings: engines](docs/screenshots/14-settings-engines.png)
+![Settings: routing](docs/screenshots/15-settings-routing.png)
 
 ---
 
 ## Architecture
 
-```
-Input  (FHIR / EHR / Free-text / Voice)
-   │
-   ▼
-Anonymizer  (Presidio PHI scrubbing)
-   │
-   ▼
-Parsers  ─────►  Unified PatientContext
-   │
-   ▼
-┌──────────────────────────────────────────────┐
-│  PIPELINE  (single-pass default → multi-round) │
-│                                                │
-│  Clinical ──┐                                  │
-│  Literature ┼──►  Critic  ──►  (loop if multi) │
-│  Safety ────┘                                  │
-└──────────────────────────────────────────────┘
-   │                          │  (parallel)
-   ▼                          ▼
-Synthesizer → Validator   Med-Error Panel
-   │
-   ▼
-SOAP Note  +  Safety Alerts  +  PubMed Citations
-```
+![System architecture](docs/screenshots/11-architecture.png)
 
-Layer-by-layer design, routing internals, and env reference → **[ARCHITECTURE.md](ARCHITECTURE.md)**
+Input from text, voice, FHIR or files is de-identified, then fanned out to the agents. The Critic checks their work against the record, the evidence and the safety findings, and the output layer produces the SOAP note, differentials, safety alerts and risk scores.
+
+## Data pipeline
+
+![Data pipeline](docs/screenshots/12-data-pipeline.png)
+
+1. **Input.** The browser starts a run over a WebSocket.
+2. **De-identification.** Microsoft Presidio removes protected health information before any model sees the text. FHIR bundles are parsed into a single patient record: birth dates become ages, and names and identifiers are never carried over.
+3. **Clinical agent (MedGemma).** Differentials, risk scores and a SOAP draft.
+4. **Literature and Safety agents in parallel.** PubMed evidence and citations; interactions, contraindications, dosing and population risks from RxNorm, DrugBank and openFDA.
+5. **Critic.** Reviews all three for contradictions, evidence gaps and missed safety issues, then decides whether there is consensus. Without consensus the agents revise for another round, up to the limit set in Settings.
+6. **Synthesis and validation.** A validated SOAP note, merged with the medication error panel, streamed back to the report.
+7. **Clinician feedback.** Corrections start the pipeline again with the note and feedback as context.
+
+Deeper design notes are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
-## The app
+## Built with
 
-Zero-build React 18 SPA, served straight from FastAPI.
-
-| View | What's in it |
-|------|--------------|
-| **Analysis** | Free-text/voice input, FHIR/CSV upload with sample cases, **live WebSocket pipeline** (real agent + round), skeuomorphic SOAP report with PDF export, doctor feedback loop (persists in background) |
-| **Emergency** | Fast-path triage, ESI scoring, red flags, immediate action cards |
-| **Observability** | Every call — provider/model/agent/round, tokens, latency; click any call to see the **exact prompt sent, the actual response, and PubMed hits** |
-| **Tools** | Multi-drug interaction checker (RxNorm-backed), BMI/MAP calculators, clinical reference tables |
-| **Imaging AI** | External Streamlit classifiers in iframes — lung disease, chest X-ray, diabetic retinopathy, skin cancer |
-| **Architecture** | Live Mermaid diagrams — system flow and data pipeline |
-| **AI Chat** | Multi-turn clinical Q&A on the routed `chat` engine |
-| **Settings** | Engines, per-role routing, key management, connection tests, model discovery |
+| Area | Stack |
+|------|-------|
+| Medical model | **MedGemma 1.5** via Ollama (local) |
+| Model gateway | LiteLLM, with per-agent routing and fallbacks to any provider |
+| De-identification | Microsoft Presidio with spaCy (regex fallback) |
+| Clinical data | FHIR R4 parser, EHR CSV and PDF parsing, unified PatientContext |
+| Evidence and safety | PubMed E-utilities, RxNorm, DrugBank, openFDA |
+| Backend | FastAPI, resumable WebSocket runs, Pydantic v2 |
+| Observability | SQLite trace store (optional Langfuse and LangSmith) |
+| Frontend | React 18, Tailwind, prebuilt with esbuild |
 
 ---
 
-## API
-
-| Method | Path | What it does |
-|--------|------|--------------|
-| `POST` | `/api/analyze` | Full multi-agent pipeline → SOAP note |
-| `POST` | `/api/emergency` | Emergency triage, ESI scoring (fast path) |
-| `POST` | `/api/chat` | AI chat via the routed `chat` engine |
-| `POST` | `/api/human-feedback` | Doctor edits → re-analysis |
-| `POST` | `/api/upload/fhir` | Upload FHIR R4 bundle JSON |
-| `POST` | `/api/upload/ehr` | Upload PDF/CSV EHR document |
-| `GET`  | `/api/safety-check` | Drug interaction lookup (RxNorm + DrugBank) |
-| `GET`  | `/api/config-status` | Active engines + provider status for the UI |
-| `GET/PUT` | `/api/config/models` | Read/replace full engine + routing config |
-| `POST` | `/api/config/secret` | Set an API key at runtime (memory only) |
-| `POST` | `/api/config/test` | Live connection test for an engine |
-| `GET`  | `/api/observability/summary` · `/traces` | Call metrics and per-call traces |
-| `GET`  | `/api/classifiers` | List imaging classifier apps |
-| `GET`  | `/api/health` | Health check |
-| `WS`   | `/ws/analyze` | Streaming pipeline events for the live visualization |
-
-Full endpoint list → [ARCHITECTURE.md](ARCHITECTURE.md#api-endpoints)
-
----
-
-## Tech stack
-
-| Layer | Tech |
-|-------|------|
-| Backend | Python 3.11, FastAPI, uvicorn, async throughout |
-| LLM gateway | **LiteLLM** — one client for Ollama / OpenAI / Groq / Azure / Anthropic / any OpenAI-compatible endpoint |
-| Routing | Per-role primary + ordered fallbacks (`config/models.json`), editable live in Settings; deploy-aware |
-| PHI safety | Microsoft Presidio + spaCy (`en_core_web_sm`; degrades to regex if absent) |
-| Clinical data | PubMed (BioPython Entrez), DrugBank, RxNorm, optional openFDA |
-| Frontend | React 18 CDN + Tailwind + Babel — **zero build step** |
-| Observability | Built-in: in-memory ring buffer + SQLite (prompt/response payloads, tokens, latency, per-agent/per-round) — optional LangSmith/Langfuse export |
-| Validation | Pydantic v2 schemas + guardrail rules (no hallucinated meds, differential completeness, explicit safety flags) |
-| Optional RAG | LanceDB + sentence-transformers — CLI-only, not in the request path |
-
----
-
-## Dependencies (lean by default)
-
-`requirements.txt` is deliberately small so the app builds inside a **512 MB free tier**. Everything heavy is lazy-loaded and moved to `requirements-optional.txt` with a graceful fallback when absent:
-
-| Removed from the default install | Why | Where it lives now |
-|---|---|---|
-| `groq` SDK | LiteLLM already talks to Groq — the `groq` package is never imported | deleted |
-| `langchain*` | not imported anywhere in the code | `requirements-optional.txt` |
-| `sentence-transformers` | RAG-CLI only, and pulls **torch (~2 GB)** — the main free-tier build OOM | `requirements-optional.txt` |
-| `lancedb` | RAG vector store, CLI-only; the literature agent uses PubMed | `requirements-optional.txt` |
-| `unstructured` | richer PDF parsing; `ehr_parser` falls back to PyPDF2 | `requirements-optional.txt` |
-| `langsmith` | optional external trace sink; built-in observability works without it | `requirements-optional.txt` |
-| spaCy `en_core_web_lg` (560 MB, runtime download) | too big / crashed mid-request; `en_core_web_sm` (~12 MB) installs as a wheel at build | swapped to `en_core_web_sm` |
-
-Need the RAG store, richer PDF parsing, or LangSmith? `pip install -r requirements-optional.txt` on a box with the RAM to spare. Details and Render notes → [INSTALL.md](INSTALL.md).
-
----
-
-## Project structure
-
-```
-clinicalpilot/
-├── backend/
-│   ├── main.py            # FastAPI app — all endpoints + routed chat + WS streaming
-│   ├── config.py          # pydantic-settings config
-│   ├── models/            # Pydantic schemas (patient, SOAP, agents, safety)
-│   ├── input_layer/       # Anonymizer, FHIR/EHR/text parsers
-│   ├── agents/            # Orchestrator, Clinical, Literature, Safety, Critic (+ prompts/)
-│   ├── debate/            # Pipeline engine (single-pass → multi-round, emits WS events)
-│   ├── validation/        # Synthesizer + output validator
-│   ├── emergency/         # Emergency fast-path triage
-│   ├── safety_panel/      # Med-error panel (interactions, dosing)
-│   ├── external/          # PubMed, DrugBank, RxNorm, openFDA
-│   ├── llm/               # LiteLLM router, model registry, secret resolution
-│   ├── observability/     # Trace store (ring buffer + SQLite w/ payloads) + optional exporters
-│   ├── guardrails/        # Hallucination checks, schema validation
-│   └── rag/               # LanceDB + embeddings (OPTIONAL — CLI only)
-├── frontend/
-│   └── index.html         # Full SPA — React 18 + Babel + Tailwind (CDN)
-├── config/models.json     # Engines + per-role routing + debate rounds
-├── data/                  # sample_fhir/, sample_ehr/, drugbank/, few_shot_examples/
-├── requirements.txt       # Lean, free-tier-friendly runtime deps
-├── requirements-optional.txt
-├── render.yaml            # Render deploy blueprint (Python 3.11, en_core_web_sm)
-├── ARCHITECTURE.md · INSTALL.md · .env.example
-└── _smoke_test.sh         # End-to-end smoke tests
-```
-
----
-
-## Smoke tests
+## Run it
 
 ```bash
-bash _smoke_test.sh
+git clone <repo-url> && cd clinicalpilot
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+
+ollama pull medgemma1.5
+python -m uvicorn backend.main:app --port 8000
 ```
 
-Validates health check, full analysis pipeline, emergency mode, drug safety checks, and classifier listing — each logged with timing.
+Open **http://localhost:8000**. Engines and keys can also be set from **Settings** in the app. Full setup notes are in [INSTALL.md](INSTALL.md).
 
----
-
-## License & disclaimer
-
-ClinicalPilot is a research and educational decision-support project. It is **not** a medical device and is **not** a substitute for professional clinical judgment. Do not use it to make real patient-care decisions.
+<sub>For research and education only. Output requires review by a qualified clinician.</sub>

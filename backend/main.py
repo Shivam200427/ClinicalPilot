@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 # Fix macOS SSL certificate verification globally.
 # On macOS, Python's urllib doesn't trust the system cert store.
@@ -50,6 +50,7 @@ from backend.llm.registry import Profile, RoleRoute, DebateConfig, Observability
 from backend.llm.secrets import set_runtime_secret, secret_status, NeedsKey, resolve_secret
 from backend.agents.llm_client import llm_call, set_call_context
 from backend.observability import store as obs_store
+from backend import runs
 
 # ── Logging ─────────────────────────────────────────────
 logging.basicConfig(
@@ -85,7 +86,7 @@ async def needs_key_handler(request: Request, exc: NeedsKey):
     detail = {
         "missing": f"An API key is required for '{exc.profile_id}'. Add it in Settings.",
         "rate_limit": f"The current key for '{exc.profile_id}' hit its rate limit. Add your own key to continue.",
-        "invalid": f"The key for '{exc.profile_id}' was rejected (expired or invalid). Enter a valid key.",
+        "invalid": f"The key for '{exc.profile_id}' was rejected. It may be expired or invalid. Enter a valid key.",
     }.get(reason, f"An API key is required for '{exc.profile_id}'.")
     return JSONResponse(
         status_code=428,
@@ -317,6 +318,19 @@ async def test_profile(payload: dict):
         return {"ok": False, "error": str(e)}
 
 
+@app.get("/api/config/effective")
+async def config_effective():
+    """The engine each role will try first right now (after deploy-aware filtering)."""
+    out = {}
+    for role in ROLE_NAMES:
+        profiles = registry.resolve_role(role)
+        if profiles:
+            p = profiles[0]
+            out[role] = {"profile": p.id, "label": p.label, "model": p.model, "provider": p.provider,
+                         "fallbacks": [f.label for f in profiles[1:]]}
+    return {"roles": out, "deployed": registry.is_deployed()}
+
+
 @app.get("/api/config/discover")
 async def discover_models(profile_id: str = ""):
     """List models available at a profile's endpoint (Ollama /api/tags or /v1/models)."""
@@ -333,7 +347,8 @@ async def discover_models(profile_id: str = ""):
                 r.raise_for_status()
                 models = [m["name"] for m in r.json().get("models", [])]
         else:
-            base = prof.base_url or "https://api.openai.com/v1"
+            default_base = {"groq": "https://api.groq.com/openai/v1"}.get(prof.provider, "https://api.openai.com/v1")
+            base = prof.base_url or default_base
             headers = {}
             key = resolve_secret(prof.api_key_ref)
             if key:
@@ -345,6 +360,73 @@ async def discover_models(profile_id: str = ""):
     except Exception as e:
         return {"ok": False, "error": str(e), "models": []}
     return {"ok": True, "models": sorted(models)}
+
+
+def _ollama_profile(profile_id: str = ""):
+    """The requested Ollama profile, or the first one configured."""
+    if profile_id:
+        prof = registry.get_profile(profile_id)
+        return prof if prof and prof.provider == "ollama" else None
+    for prof in registry.load_config().profiles.values():
+        if prof.provider == "ollama":
+            return prof
+    return None
+
+
+@app.get("/api/ollama/status")
+async def ollama_status(profile_id: str = ""):
+    """Is Ollama reachable, is the model pulled, and is it loaded in memory right now?"""
+    import httpx
+    prof = _ollama_profile(profile_id)
+    if prof is None:
+        return {"configured": False}
+    base = (prof.base_url or "http://localhost:11434").rstrip("/")
+    out = {"configured": True, "profile": prof.id, "model": prof.model, "base_url": base,
+           "deployed": registry.is_deployed(), "reachable": False, "installed": False,
+           "loaded": False, "expires_at": None, "models": []}
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            tags = (await client.get(f"{base}/api/tags")).json().get("models", [])
+            ps = (await client.get(f"{base}/api/ps")).json().get("models", [])
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    def same(name: str) -> bool:  # "medgemma1.5" matches "medgemma1.5:latest"
+        return name == prof.model or name.split(":")[0] == prof.model.split(":")[0]
+
+    out["reachable"] = True
+    out["models"] = sorted(m["name"] for m in tags)
+    out["installed"] = any(same(m["name"]) for m in tags)
+    running = next((m for m in ps if same(m.get("name", ""))), None)
+    if running:
+        out["loaded"] = True
+        out["expires_at"] = running.get("expires_at")
+    return out
+
+
+@app.post("/api/ollama/load")
+async def ollama_load(payload: dict):
+    """Load (or unload) the model into memory once. No text is generated.
+
+    keep_alive is how long Ollama keeps it loaded after the last request; each real
+    call resets that timer, so this only needs to be pressed once per session.
+    """
+    import httpx
+    prof = _ollama_profile(payload.get("profile_id", ""))
+    if prof is None:
+        raise HTTPException(404, "No Ollama engine configured")
+    base = (prof.base_url or "http://localhost:11434").rstrip("/")
+    keep_alive = payload.get("keep_alive", "30m")
+    start = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            r = await client.post(f"{base}/api/generate",
+                                  json={"model": prof.model, "keep_alive": keep_alive})
+            r.raise_for_status()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "latency_ms": int((time.monotonic() - start) * 1000)}
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -433,6 +515,12 @@ async def emergency(request: AnalysisRequest):
 
     request_id = obs_store.new_request_id()
     set_call_context(request_id=request_id)
+
+    from backend import demo
+    if demo.is_enabled():
+        await asyncio.sleep(1.2)
+        return {"request_id": request_id, "emergency": demo.demo_emergency()}
+
     try:
         from backend.emergency.emergency import emergency_analyze
 
@@ -542,6 +630,27 @@ async def safety_check(drugs: str = ""):
         results["rxnorm_interactions"] = rxnorm_results
     except Exception as e:
         results["rxnorm_interactions"] = f"Error: {e}"
+
+    # NLM retired the RxNav interaction API in January 2024, so RxNorm usually returns
+    # nothing now. Review the list with the medication-error panel (routed model) as well.
+    if len(drug_list) >= 2:
+        try:
+            from backend import demo
+            from backend.models.patient import Medication, PatientContext
+            from backend.safety_panel.med_errors import run_med_error_panel
+
+            if demo.is_enabled():
+                results["med_panel"] = demo.demo_med_panel()
+            else:
+                patient = PatientContext(
+                    medications=[Medication(name=d) for d in drug_list],
+                    current_prompt=f"Medication review: {', '.join(drug_list)}",
+                )
+                results["med_panel"] = (await run_med_error_panel(patient)).model_dump()
+        except NeedsKey:
+            raise
+        except Exception as e:
+            results["med_panel_error"] = str(e)
 
     # DrugBank lookup
     try:
@@ -656,38 +765,36 @@ async def chat(payload: dict):
 #  WEBSOCKET (Streaming Analysis)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-@app.websocket("/ws/analyze")
-async def ws_analyze(websocket: WebSocket):
-    """WebSocket endpoint for streaming analysis progress."""
-    await websocket.accept()
+_TERMINAL = ("complete", "error", "cancelled")
+
+
+async def _analysis_work(run: "runs.Run", text: str, requested_rounds: Any, feedback: str = "") -> None:
+    """The full analysis pipeline for one run. Publishes progress to the run."""
+    from backend.agents.llm_client import set_stream_sink
+
+    async def send(msg: dict):
+        run.publish(msg)
+
+    async def sink(role: str, delta: Optional[str]):
+        if delta is None:
+            run.publish({"type": "delta", "agent": role, "reset": True})
+        else:
+            run.publish({"type": "delta", "agent": role, "text": delta})
+
+    set_call_context(request_id=run.id)
+    set_stream_sink(sink)
 
     try:
-        data = await websocket.receive_json()
-        text = data.get("text", "")
-
-        if not text:
-            await websocket.send_json({"error": "No text provided"})
-            await websocket.close()
-            return
-
-        async def send(msg: dict):
-            await websocket.send_json(msg)
-
-        async def send_status(stage: str, detail: str = ""):
-            await send({"type": "status", "stage": stage, "detail": detail})
-
-        # Group all calls of this run under one request id for observability.
-        request_id = obs_store.new_request_id()
-        set_call_context(request_id=request_id)
-
         # Presentation dataset: stream a realistic run without external model calls.
         from backend import demo
         if demo.is_enabled():
-            payload = await demo.stream_demo_analysis(send, request_id)
+            payload = await demo.stream_demo_analysis(send, run.id)
+            if feedback:
+                payload["soap"]["plan"] += f"\n7. Clinician feedback addressed: {feedback}"
             await send(payload)
             return
 
-        await send_status("parsing", "Anonymizing PHI & parsing clinical input")
+        await send({"type": "status", "stage": "parsing", "detail": "Anonymizing PHI and parsing input"})
 
         from backend.input_layer.anonymizer import get_anonymizer
         from backend.input_layer.text_parser import parse_text_input
@@ -704,61 +811,129 @@ async def ws_analyze(websocket: WebSocket):
         from backend.safety_panel.med_errors import run_med_error_panel
 
         debate_cfg = get_debate()
-        max_rounds = data.get("max_debate_rounds") or debate_cfg.max_rounds
+        max_rounds = requested_rounds or debate_cfg.max_rounds
         max_rounds = max(debate_cfg.min_rounds, min(int(max_rounds), 10))
-
-        # Forward live debate progress (round + which agent) straight to the client.
-        async def on_event(evt: dict):
-            await send(evt)
 
         # Med-error panel runs in parallel with the debate (as its own tracked step).
         await send({"type": "agent", "agent": "med_panel", "round": 0, "status": "start"})
 
         async def _run_panel():
             r = await run_med_error_panel(patient)
-            await send({"type": "agent", "agent": "med_panel", "round": 0, "status": "done"})
+            await send({"type": "agent", "agent": "med_panel", "round": 0, "status": "done",
+                        "data": r.model_dump()})
             return r
 
         debate_state, med_panel = await asyncio.gather(
-            run_debate(patient, max_rounds=max_rounds, on_event=on_event),
+            run_debate(patient, max_rounds=max_rounds, on_event=send),
             _run_panel(),
         )
 
-        # Also send the final structured output of each agent (for detail panels).
-        for agent_name, outs in (
-            ("clinical", debate_state.clinical_outputs),
-            ("literature", debate_state.literature_outputs),
-            ("safety", debate_state.safety_outputs),
-            ("critic", debate_state.critic_outputs),
-        ):
-            if outs:
-                await send({"type": "agent_result", "agent": agent_name, "data": outs[-1].model_dump()})
-
-        await send_status("synthesis", "Synthesizing final SOAP note")
+        await send({"type": "status", "stage": "synthesis", "detail": "Writing the SOAP note"})
+        await send({"type": "agent", "agent": "synthesizer", "round": None, "status": "start"})
         soap = await synthesize_soap(patient, debate_state)
         soap = validate_output(soap)
 
         await send({
             "type": "complete",
-            "request_id": request_id,
+            "request_id": run.id,
             "soap": soap.model_dump(),
             "debate": debate_state.model_dump(),
             "med_error_panel": med_panel.model_dump(),
         })
-
-    except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected")
+    except asyncio.CancelledError:
+        raise
+    except NeedsKey as e:
+        await send({"type": "error", "message": f"An API key is required for '{e.profile_id}'.",
+                    "needs_key": True, "key_ref": e.key_ref, "profile": e.profile_id,
+                    "reason": getattr(e, "reason", "missing")})
     except Exception as e:
-        logger.exception("WebSocket analysis failed")
-        try:
-            await websocket.send_json({"type": "error", "message": str(e)})
-        except Exception:
-            pass
+        logger.exception("Analysis run %s failed", run.id)
+        await send({"type": "error", "message": str(e)})
+
+
+@app.websocket("/ws/analyze")
+async def ws_analyze(websocket: WebSocket):
+    """Stream an analysis run.
+
+    Client sends {"text": ...} to start a run, or {"resume": request_id} to re-attach to
+    one (after a refresh or dropped connection). The first reply is {"type": "run"}; then
+    a replay of past events, then live events. {"type": "cancel"} stops the run. Closing
+    the socket does not stop it.
+    """
+    await websocket.accept()
+    try:
+        data = await websocket.receive_json()
+    except Exception:
+        return
+
+    if data.get("resume"):
+        run = runs.get(str(data["resume"]))
+        if run is None:
+            await websocket.send_json({"type": "gone"})
+            await websocket.close()
+            return
+    else:
+        text = (data.get("text") or "").strip()
+        feedback = (data.get("feedback") or "").strip()
+        if feedback or data.get("edited_soap"):
+            # Clinician feedback: re-run with the note and the correction as context.
+            text = (f"{text}\n\n---\nDoctor Feedback: {feedback}\n"
+                    f"Edited SOAP: {data.get('edited_soap', '')}")
+        if not text:
+            await websocket.send_json({"type": "error", "message": "No text provided"})
+            await websocket.close()
+            return
+        rid = obs_store.new_request_id()
+        rounds = data.get("max_debate_rounds")
+        run = runs.start(rid, lambda r: _analysis_work(r, text, rounds, feedback))
+
+    await websocket.send_json({"type": "run", "request_id": run.id, "resumed": bool(data.get("resume")),
+                              "started": run.created, "server_now": time.time()})
+    q, replay = run.subscribe()
+
+    async def pump():
+        for evt in replay:
+            await websocket.send_json(evt)
+            if evt.get("type") in _TERMINAL:
+                return
+        while True:
+            evt = await q.get()
+            await websocket.send_json(evt)
+            if evt.get("type") in _TERMINAL:
+                return
+
+    async def listen():
+        while True:
+            msg = await websocket.receive_json()
+            if msg.get("type") == "cancel":
+                runs.cancel(run.id)
+
+    pump_task = asyncio.create_task(pump())
+    listen_task = asyncio.create_task(listen())
+    try:
+        await asyncio.wait({pump_task, listen_task}, return_when=asyncio.FIRST_COMPLETED)
     finally:
+        run.unsubscribe(q)
+        for t in (pump_task, listen_task):
+            t.cancel()
         try:
             await websocket.close()
         except Exception:
             pass
+
+
+@app.get("/api/runs/{request_id}")
+async def run_status(request_id: str):
+    """Whether a run is still known to the server (used before resuming)."""
+    run = runs.get(request_id)
+    if run is None:
+        raise HTTPException(404, "Run not found")
+    return {"request_id": run.id, "status": run.status}
+
+
+@app.post("/api/runs/{request_id}/cancel")
+async def run_cancel(request_id: str):
+    return {"cancelled": runs.cancel(request_id)}
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
